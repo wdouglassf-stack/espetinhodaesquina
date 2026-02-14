@@ -13,7 +13,7 @@ interface PedidoDB {
 }
 
 interface Pedido {
-  id: number
+  ids: number[]
   produto_nome: string
   quantidade: number
   valor_unit: number
@@ -38,18 +38,11 @@ export default function PedidosLista({ mesaId, onPedidoConcluido }: Props) {
   async function carregarPedidos() {
     setLoading(true)
 
-    // 1️⃣ Busca pedidos
-    const { data: pedidosData, error: pedidosError } = await supabase
+    const { data: pedidosData } = await supabase
       .from('pedidos')
       .select('id, produto_id, quantidade, valor_unit, valor_total, status')
       .eq('mesa_id', mesaId)
       .order('id')
-
-    if (pedidosError) {
-      console.error('Erro ao carregar pedidos:', pedidosError)
-      setLoading(false)
-      return
-    }
 
     if (!pedidosData || pedidosData.length === 0) {
       setPedidos([])
@@ -57,67 +50,70 @@ export default function PedidosLista({ mesaId, onPedidoConcluido }: Props) {
       return
     }
 
-    // 2️⃣ Busca produtos
-    const { data: produtosData, error: produtosError } = await supabase
+    const { data: produtosData } = await supabase
       .from('produtos')
       .select('id, nome')
 
-    if (produtosError) {
-      console.error('Erro ao carregar produtos:', produtosError)
-      setLoading(false)
-      return
-    }
-
-    // 3️⃣ Mapa id → nome
     const mapaProdutos = new Map<number, string>()
     produtosData?.forEach((p: Produto) => {
       mapaProdutos.set(p.id, p.nome)
     })
 
-    // 4️⃣ Monta pedidos finais
-    const pedidosFormatados: Pedido[] = pedidosData.map(
-      (p: PedidoDB) => ({
-        id: p.id,
-        produto_nome: mapaProdutos.get(p.produto_id) || 'Produto',
-        quantidade: p.quantidade,
-        valor_unit: p.valor_unit,
-        valor_total: p.valor_total,
-        status: p.status
-      })
-    )
+    const mapa = new Map<number, Pedido>()
 
-    setPedidos(pedidosFormatados)
+    pedidosData.forEach((p: PedidoDB) => {
+      if (!mapa.has(p.produto_id)) {
+        mapa.set(p.produto_id, {
+          ids: [],
+          produto_nome: mapaProdutos.get(p.produto_id) || 'Produto',
+          quantidade: 0,
+          valor_unit: p.valor_unit,
+          valor_total: 0,
+          status: 'PENDENTE'
+        })
+      }
+
+      const item = mapa.get(p.produto_id)!
+      item.ids.push(p.id)
+      item.quantidade += p.quantidade
+      item.valor_total += p.valor_total
+    })
+
+    setPedidos(Array.from(mapa.values()))
     setLoading(false)
   }
 
-  async function concluirPedido(pedidoId: number) {
-    const { error } = await supabase
+  async function concluirPedido(ids: number[]) {
+    await supabase.from('pedidos').update({ status: 'CONCLUÍDO' }).in('id', ids)
+    onPedidoConcluido()
+  }
+
+  async function concluirTodos() {
+    const ok = confirm('Concluir todos os pedidos da mesa?')
+    if (!ok) return
+
+    await supabase
       .from('pedidos')
       .update({ status: 'CONCLUÍDO' })
-      .eq('id', pedidoId)
-
-    if (error) {
-      console.error('Erro ao concluir pedido:', error)
-      return
-    }
+      .eq('mesa_id', mesaId)
+      .eq('status', 'PENDENTE')
 
     onPedidoConcluido()
   }
 
-  async function excluirPedido(pedidoId: number) {
-    const confirmacao = confirm('Excluir este pedido?')
-    if (!confirmacao) return
+  async function removerUmaUnidade(id: number) {
+    const ok = confirm('Remover uma unidade deste produto?')
+    if (!ok) return
 
-    const { error } = await supabase
-      .from('pedidos')
-      .delete()
-      .eq('id', pedidoId)
+    await supabase.from('pedidos').delete().eq('id', id)
+    carregarPedidos()
+  }
 
-    if (error) {
-      console.error('Erro ao excluir pedido:', error)
-      return
-    }
+  async function removerTodos(ids: number[]) {
+    const ok = confirm('Remover todas as unidades deste produto?')
+    if (!ok) return
 
+    await supabase.from('pedidos').delete().in('id', ids)
     carregarPedidos()
   }
 
@@ -127,85 +123,71 @@ export default function PedidosLista({ mesaId, onPedidoConcluido }: Props) {
 
   if (loading) return <p>Carregando pedidos...</p>
 
-  if (pedidos.length === 0) {
-    return <p style={{ textAlign: 'center' }}>Nenhum pedido.</p>
-  }
-
   const total = pedidos.reduce((acc, p) => acc + p.valor_total, 0)
 
   return (
-    <div
-      style={{
-        marginTop: 20,
-        padding: 16,
-        border: '1px solid #ddd',
-        borderRadius: 8
-      }}
-    >
-      <h3 style={{ textAlign: 'center', marginBottom: 12 }}>
-        🧾 Pedidos da Mesa
-      </h3>
+    <div style={{ marginTop: 20, padding: 16, border: '1px solid #ddd', borderRadius: 8 }}>
+      <h3 style={{ textAlign: 'center' }}>🧾 Pedidos da Mesa</h3>
+
+      <div style={{ textAlign: 'center', marginBottom: 12 }}>
+        <button
+          onClick={concluirTodos}
+          style={{
+            padding: '8px 16px',
+            background: '#2563eb',
+            color: '#fff',
+            border: 'none',
+            borderRadius: 6,
+            cursor: 'pointer'
+          }}
+        >
+          ✔ Concluir todos
+        </button>
+      </div>
 
       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
         <thead>
-          <tr style={{ borderBottom: '1px solid #ccc' }}>
+          <tr>
             <th>Produto</th>
             <th>Qtd</th>
             <th>Unit</th>
             <th>Subtotal</th>
-            <th style={{ textAlign: 'center' }}>Ações</th>
+            <th>Ações</th>
           </tr>
         </thead>
         <tbody>
-          {pedidos.map(p => (
-            <tr key={p.id} style={{ borderBottom: '1px solid #eee' }}>
+          {pedidos.map((p, i) => (
+            <tr key={i}>
               <td>{p.produto_nome}</td>
               <td style={{ textAlign: 'center' }}>{p.quantidade}</td>
               <td>R$ {p.valor_unit.toFixed(2)}</td>
               <td>R$ {p.valor_total.toFixed(2)}</td>
               <td style={{ textAlign: 'center' }}>
-                {p.status === 'PENDENTE' ? (
-                  <>
-                    <button
-                      onClick={() => concluirPedido(p.id)}
-                      style={{
-                        padding: '4px 8px',
-                        marginRight: 6,
-                        background: '#16a34a',
-                        color: '#fff',
-                        border: 'none',
-                        borderRadius: 4,
-                        cursor: 'pointer'
-                      }}
-                    >
-                      ✔ Concluir
-                    </button>
-
-                    <button
-                      onClick={() => excluirPedido(p.id)}
-                      style={{
-                        padding: '4px 8px',
-                        background: '#dc2626',
-                        color: '#fff',
-                        border: 'none',
-                        borderRadius: 4,
-                        cursor: 'pointer'
-                      }}
-                    >
-                      🗑
-                    </button>
-                  </>
-                ) : (
-                  <span style={{ color: '#16a34a' }}>✅</span>
-                )}
+                <button
+                  onClick={() => concluirPedido(p.ids)}
+                  style={{ marginRight: 6 }}
+                >
+                  ✔
+                </button>
+                <button
+                  onClick={() => removerUmaUnidade(p.ids[0])}
+                  style={{ marginRight: 6 }}
+                >
+                  ➖ 1
+                </button>
+                <button
+                  onClick={() => removerTodos(p.ids)}
+                >
+                  🗑
+                </button>
               </td>
             </tr>
           ))}
         </tbody>
       </table>
 
-      <p style={{ marginTop: 12, textAlign: 'right' }}>
-        <strong>💰 Total da Mesa:</strong> R$ {total.toFixed(2)}
+      <p style={{ textAlign: 'right', marginTop: 12 }}>
+        <strong>Total:</strong> R$ {total.toFixed(2)}
       </p>
     </div>
   )

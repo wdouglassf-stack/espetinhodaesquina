@@ -22,7 +22,9 @@ export default function Caixa() {
   const [loading, setLoading] = useState(false)
   const [diaFechado, setDiaFechado] = useState(false)
 
-  // 🔐 USUÁRIO LOGADO (CAIXA ou GERENTE)
+  // ⭐ DESCONTO MANUAL (mantido)
+  const [descontoDia, setDescontoDia] = useState('')
+
   const { usuario, loading: loadingUsuario } = useAuth()
 
   async function verificarFechamento() {
@@ -65,18 +67,29 @@ export default function Caixa() {
     carregarCaixa()
   }, [])
 
-  const totalGeral = pagamentos.reduce((acc, p) => acc + Number(p.total), 0)
+  // ✅ VALORES CORRETOS PARA CAIXA
+  const totalGeral = pagamentos.reduce(
+    (acc, p) => acc + Number(p.valor_pago),
+    0
+  )
+
   const totalDinheiro = pagamentos
     .filter(p => p.forma_pagamento === 'DINHEIRO')
-    .reduce((a, p) => a + Number(p.total), 0)
+    .reduce((a, p) => a + Number(p.valor_pago), 0)
 
   const totalPix = pagamentos
     .filter(p => p.forma_pagamento === 'PIX')
-    .reduce((a, p) => a + Number(p.total), 0)
+    .reduce((a, p) => a + Number(p.valor_pago), 0)
 
   const totalCartao = pagamentos
     .filter(p => p.forma_pagamento === 'CARTAO')
-    .reduce((a, p) => a + Number(p.total), 0)
+    .reduce((a, p) => a + Number(p.valor_pago), 0)
+
+  // ⭐ TOTAL DE DESCONTOS AUTOMÁTICO
+  const totalDescontos = pagamentos.reduce(
+    (acc, p) => acc + (Number(p.total) - Number(p.valor_pago)),
+    0
+  )
 
   async function encerrarDia() {
     if (diaFechado) return
@@ -91,7 +104,8 @@ export default function Caixa() {
         total_geral: totalGeral,
         total_dinheiro: totalDinheiro,
         total_pix: totalPix,
-        total_cartao: totalCartao
+        total_cartao: totalCartao,
+        desconto: totalDescontos + (Number(descontoDia) || 0)
       })
 
     if (error) {
@@ -108,14 +122,12 @@ export default function Caixa() {
     <main style={{ padding: 20 }}>
       <h1>💰 Caixa do Dia</h1>
 
-      {/* 👤 USUÁRIO LOGADO */}
       {!loadingUsuario && usuario && (
         <p style={{ marginTop: 5 }}>
           👤 {usuario.nome} — <strong>{usuario.role}</strong>
         </p>
       )}
 
-      {/* FILTRO */}
       <div style={{ display: 'flex', gap: 10, marginTop: 20 }}>
         <input
           type="date"
@@ -125,7 +137,6 @@ export default function Caixa() {
         <button onClick={carregarCaixa}>🔍 Buscar</button>
       </div>
 
-      {/* RESUMO */}
       <div
         style={{
           display: 'grid',
@@ -134,13 +145,27 @@ export default function Caixa() {
           marginTop: 20
         }}
       >
-        <Resumo titulo="💰 Total Geral" valor={totalGeral} />
+        <Resumo titulo="💰 Total Geral (Recebido)" valor={totalGeral} />
         <Resumo titulo="💵 Dinheiro" valor={totalDinheiro} />
         <Resumo titulo="📲 Pix" valor={totalPix} />
         <Resumo titulo="💳 Cartão" valor={totalCartao} />
+        <Resumo titulo="🏷️ Descontos" valor={totalDescontos} />
       </div>
 
-      {/* 🔒 BOTÃO APENAS GERENTE */}
+      {/* ⭐ DESCONTO MANUAL EXTRA */}
+      {!diaFechado && (
+        <div style={{ marginTop: 20, maxWidth: 200 }}>
+          <label>Desconto Extra (R$)</label>
+          <input
+            type="number"
+            value={descontoDia}
+            onChange={e => setDescontoDia(e.target.value)}
+            placeholder="0,00"
+            style={{ width: '100%', marginTop: 5 }}
+          />
+        </div>
+      )}
+
       {!loadingUsuario && usuario?.role === 'GERENTE' && (
         <div style={{ marginTop: 20 }}>
           <button
@@ -151,8 +176,7 @@ export default function Caixa() {
               background: diaFechado ? '#aaa' : '#d32f2f',
               color: '#fff',
               border: 'none',
-              borderRadius: 6,
-              cursor: diaFechado ? 'not-allowed' : 'pointer'
+              borderRadius: 6
             }}
           >
             {diaFechado ? '🔒 Dia Encerrado' : '🧾 Encerrar Dia'}
@@ -160,10 +184,8 @@ export default function Caixa() {
         </div>
       )}
 
-      {/* LISTA */}
       <h2 style={{ marginTop: 30 }}>📋 Pagamentos</h2>
 
-      {loading && <p>Carregando...</p>}
       {!loading && pagamentos.length === 0 && <p>Nenhum pagamento.</p>}
 
       {!loading && pagamentos.length > 0 && (
@@ -173,20 +195,28 @@ export default function Caixa() {
               <th>Mesa</th>
               <th>Forma</th>
               <th>Total</th>
+              <th>Pago</th>
+              <th>Desconto</th>
               <th>Hora</th>
             </tr>
           </thead>
           <tbody>
-            {pagamentos.map(p => (
-              <tr key={p.id}>
-                <td>{p.mesa_id}</td>
-                <td>{p.forma_pagamento}</td>
-                <td>R$ {Number(p.total).toFixed(2)}</td>
-                <td>
-                  {new Date(p.created_at).toLocaleTimeString('pt-BR')}
-                </td>
-              </tr>
-            ))}
+            {pagamentos.map(p => {
+              const desconto = Number(p.total) - Number(p.valor_pago)
+
+              return (
+                <tr key={p.id}>
+                  <td>{p.mesa_id}</td>
+                  <td>{p.forma_pagamento}</td>
+                  <td>R$ {Number(p.total).toFixed(2)}</td>
+                  <td>R$ {Number(p.valor_pago).toFixed(2)}</td>
+                  <td>{desconto > 0 ? `R$ ${desconto.toFixed(2)}` : '—'}</td>
+                  <td>
+                    {new Date(p.created_at).toLocaleTimeString('pt-BR')}
+                  </td>
+                </tr>
+              )
+            })}
           </tbody>
         </table>
       )}

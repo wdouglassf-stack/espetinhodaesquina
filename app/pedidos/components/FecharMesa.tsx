@@ -29,11 +29,12 @@ export default function FecharMesa({
   const [pedidos, setPedidos] = useState<Pedido[]>([])
   const [totalConsumido, setTotalConsumido] = useState(0)
   const [pagamentos, setPagamentos] = useState<
-    { id: number; valor_pago: number; forma_pagamento: FormaPagamento; troco: number }[]
+    { id: number; valor_pago: number; desconto?: number; forma_pagamento: FormaPagamento; troco: number }[]
   >([])
+
   const [valorPago, setValorPago] = useState('')
-  const [formaPagamento, setFormaPagamento] =
-    useState<FormaPagamento>('DINHEIRO')
+  const [valorDesconto, setValorDesconto] = useState('')
+  const [formaPagamento, setFormaPagamento] = useState<FormaPagamento>('DINHEIRO')
   const [loading, setLoading] = useState(true)
   const [troco, setTroco] = useState(0)
 
@@ -61,10 +62,14 @@ export default function FecharMesa({
     setLoading(false)
   }
 
+  // ✅ VALOR DERIVADO (ESTÁVEL)
+  const totalPagoComDesconto = pagamentos.reduce(
+    (acc, p) => acc + p.valor_pago + (p.desconto || 0),
+    0
+  )
+
   useEffect(() => {
-    const saldoAtual =
-      totalConsumido -
-      pagamentos.reduce((acc, p) => acc + p.valor_pago, 0)
+    const saldoAtual = totalConsumido - totalPagoComDesconto
 
     if (formaPagamento === 'DINHEIRO') {
       const valor = Number(valorPago)
@@ -76,12 +81,10 @@ export default function FecharMesa({
     } else {
       setTroco(0)
     }
-  }, [valorPago, formaPagamento, totalConsumido, pagamentos])
+  }, [valorPago, formaPagamento, totalConsumido, totalPagoComDesconto])
 
   async function registrarPagamento() {
-    const saldoAtual =
-      totalConsumido -
-      pagamentos.reduce((acc, p) => acc + p.valor_pago, 0)
+    const saldoAtual = totalConsumido - totalPagoComDesconto
 
     let valor: number
 
@@ -106,6 +109,7 @@ export default function FecharMesa({
       {
         mesa_id: mesaId,
         valor_pago: valor,
+        desconto: Number(valorDesconto) || 0,
         forma_pagamento: formaPagamento,
         troco:
           formaPagamento === 'DINHEIRO'
@@ -121,27 +125,22 @@ export default function FecharMesa({
     }
 
     setValorPago('')
+    setValorDesconto('')
     setTroco(0)
     carregarMesa()
   }
 
   async function fecharMesa() {
-    const totalPago = pagamentos.reduce(
-      (acc, p) => acc + p.valor_pago,
-      0
-    )
-
-    if (totalPago < totalConsumido) {
+    if (totalPagoComDesconto < totalConsumido) {
       alert('Ainda existe saldo pendente na mesa.')
       return
     }
 
-    // 🔥 HISTÓRICO CORRETO (FK produto_id)
     if (pedidos.length > 0) {
       await supabase.from('pedidos_historico').insert(
         pedidos.map(p => ({
           mesa_id: mesaId,
-          produto_id: p.produto_id, // ✅ FK correta
+          produto_id: p.produto_id,
           quantidade: p.quantidade,
           valor_unit: p.valor_unit,
           valor_total: p.valor_total,
@@ -159,6 +158,7 @@ export default function FecharMesa({
         total: totalConsumido,
         forma_pagamento: p.forma_pagamento,
         valor_pago: p.valor_pago,
+        desconto: p.desconto || 0,
         troco: p.troco
       }))
     )
@@ -182,35 +182,21 @@ export default function FecharMesa({
   if (pedidos.length === 0)
     return <p>Nenhum pedido concluído para fechar.</p>
 
-  const totalPago = pagamentos.reduce(
-    (acc, p) => acc + p.valor_pago,
-    0
-  )
-  const saldo = totalConsumido - totalPago
+  const saldo = totalConsumido - totalPagoComDesconto
 
   return (
-    <div
-      style={{
-        marginTop: 20,
-        padding: 16,
-        border: '1px solid #ccc',
-        borderRadius: 8,
-        maxWidth: 400
-      }}
-    >
+    <div style={{ marginTop: 20, padding: 16, border: '1px solid #ccc', borderRadius: 8, maxWidth: 400 }}>
       <h3>💳 Mesa {mesaId}</h3>
 
       <p><strong>Total consumido:</strong> R$ {totalConsumido.toFixed(2)}</p>
-      <p><strong>Total pago:</strong> R$ {totalPago.toFixed(2)}</p>
+      <p><strong>Total pago:</strong> R$ {totalPagoComDesconto.toFixed(2)}</p>
       <p><strong>Saldo:</strong> R$ {saldo.toFixed(2)}</p>
 
       <label>
         Forma de pagamento:
         <select
           value={formaPagamento}
-          onChange={e =>
-            setFormaPagamento(e.target.value as FormaPagamento)
-          }
+          onChange={e => setFormaPagamento(e.target.value as FormaPagamento)}
           style={{ width: '100%', marginTop: 4 }}
         >
           <option value="DINHEIRO">💵 Dinheiro</option>
@@ -220,23 +206,32 @@ export default function FecharMesa({
       </label>
 
       {formaPagamento === 'DINHEIRO' && (
-        <>
-          <label style={{ marginTop: 8, display: 'block' }}>
-            Valor pago:
-            <input
-              type="number"
-              step="0.01"
-              value={valorPago}
-              onChange={e => setValorPago(e.target.value)}
-              style={{ width: '100%', marginTop: 4 }}
-            />
-          </label>
-
-          <p style={{ marginTop: 8 }}>
-            <strong>Troco:</strong> R$ {troco.toFixed(2)}
-          </p>
-        </>
+        <label style={{ marginTop: 8, display: 'block' }}>
+          Valor pago:
+          <input
+            type="number"
+            step="0.01"
+            value={valorPago}
+            onChange={e => setValorPago(e.target.value)}
+            style={{ width: '100%', marginTop: 4 }}
+          />
+        </label>
       )}
+
+      <label style={{ marginTop: 8, display: 'block' }}>
+        Desconto (R$):
+        <input
+          type="number"
+          step="0.01"
+          value={valorDesconto}
+          onChange={e => setValorDesconto(e.target.value)}
+          style={{ width: '100%', marginTop: 4 }}
+        />
+      </label>
+
+      <p style={{ marginTop: 8 }}>
+        <strong>Troco:</strong> R$ {troco.toFixed(2)}
+      </p>
 
       <button
         onClick={registrarPagamento}
@@ -247,8 +242,7 @@ export default function FecharMesa({
           background: '#16a34a',
           color: '#fff',
           border: 'none',
-          borderRadius: 6,
-          cursor: 'pointer'
+          borderRadius: 6
         }}
       >
         💰 Registrar Pagamento
@@ -264,8 +258,7 @@ export default function FecharMesa({
           background: saldo > 0 ? '#ccc' : '#2563eb',
           color: '#fff',
           border: 'none',
-          borderRadius: 6,
-          cursor: saldo > 0 ? 'not-allowed' : 'pointer'
+          borderRadius: 6
         }}
       >
         ✅ Fechar Mesa
