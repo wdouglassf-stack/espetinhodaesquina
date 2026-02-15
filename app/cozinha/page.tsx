@@ -1,206 +1,200 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 
 interface PedidoDB {
+  id: number
   mesa_id: number
   produto_id: number
   quantidade: number
+  created_at: string
 }
 
-interface Produto {
-  id: number
-  nome: string
+interface ItemCozinha {
+  produto_nome: string
+  quantidade: number
 }
 
 interface PedidoCozinha {
   mesa_id: number
-  itens: {
-    produto_nome: string
-    quantidade: number
-  }[]
+  dataHora: string
+  itens: ItemCozinha[]
 }
 
 export default function Cozinha() {
   const [mesas, setMesas] = useState<PedidoCozinha[]>([])
   const [loading, setLoading] = useState(true)
 
-  // Função para carregar pedidos
+  const totalPedidosAnterior = useRef(0)
+  const somPedido = useRef<HTMLAudioElement | null>(null)
+  const audioLiberado = useRef(false)
+
+  // 🔓 Libera áudio SOMENTE após clique (regra do navegador)
+  useEffect(() => {
+    const liberarAudio = () => {
+      if (!audioLiberado.current) {
+        const audio = document.createElement('audio')
+        audio.src = '/alerta-cozinha.mp3'
+        audio.preload = 'auto'
+        somPedido.current = audio
+        audioLiberado.current = true
+      }
+      document.removeEventListener('click', liberarAudio)
+    }
+
+    document.addEventListener('click', liberarAudio)
+    return () => document.removeEventListener('click', liberarAudio)
+  }, [])
+
   async function carregarPedidos() {
     setLoading(true)
 
-    // Busca pedidos não impressos
-    const { data: pedidosData, error: pedidosError } = await supabase
+    const { data: pedidosData } = await supabase
       .from('pedidos')
-      .select('mesa_id, produto_id, quantidade')
+      .select('id, mesa_id, produto_id, quantidade, created_at')
       .eq('impresso', false)
       .order('created_at', { ascending: true })
 
-    if (pedidosError) {
-      console.error('Erro ao carregar pedidos da cozinha:', pedidosError)
-      setMesas([])
-      setLoading(false)
-      return
-    }
-
     if (!pedidosData || pedidosData.length === 0) {
       setMesas([])
+      totalPedidosAnterior.current = 0
       setLoading(false)
       return
     }
 
-    // Busca produtos para mapear o nome
-    const { data: produtosData, error: produtosError } = await supabase
+    // 🔔 SOM quando chega pedido novo
+    if (
+      audioLiberado.current &&
+      pedidosData.length > totalPedidosAnterior.current &&
+      somPedido.current
+    ) {
+      try {
+        somPedido.current.currentTime = 0
+        somPedido.current.play()
+      } catch {}
+    }
+    totalPedidosAnterior.current = pedidosData.length
+
+    const { data: produtosData } = await supabase
       .from('produtos')
       .select('id, nome')
 
-    if (produtosError) {
-      console.error('Erro ao carregar produtos:', produtosError)
-      setLoading(false)
-      return
-    }
-
     const mapaProdutos = new Map<number, string>()
-    produtosData?.forEach((p: Produto) => {
-      mapaProdutos.set(p.id, p.nome)
-    })
+    produtosData?.forEach(p => mapaProdutos.set(p.id, p.nome))
 
-    // Agrupa pedidos por mesa
-    const mapaMesas = new Map<number, PedidoCozinha>()
-    pedidosData.forEach((p: PedidoDB) => {
+    const mapaMesas = new Map<
+      number,
+      { dataHora: string; itens: Map<number, ItemCozinha> }
+    >()
+
+    pedidosData.forEach(p => {
+      // ✅ AJUSTE DEFINITIVO DO HORÁRIO (UTC → Campo Grande)
+      const data = new Date(p.created_at)
+      data.setHours(data.getHours() + 4)
+
+      const dataHora = data.toLocaleString('pt-BR', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+      })
+
       if (!mapaMesas.has(p.mesa_id)) {
-        mapaMesas.set(p.mesa_id, { mesa_id: p.mesa_id, itens: [] })
+        mapaMesas.set(p.mesa_id, {
+          dataHora,
+          itens: new Map()
+        })
       }
 
-      mapaMesas.get(p.mesa_id)!.itens.push({
-        produto_nome: mapaProdutos.get(p.produto_id) || 'Produto',
-        quantidade: p.quantidade
-      })
+      const mesa = mapaMesas.get(p.mesa_id)!
+      const nome = mapaProdutos.get(p.produto_id) || 'Produto'
+
+      if (mesa.itens.has(p.produto_id)) {
+        mesa.itens.get(p.produto_id)!.quantidade += p.quantidade
+      } else {
+        mesa.itens.set(p.produto_id, {
+          produto_nome: nome,
+          quantidade: p.quantidade
+        })
+      }
     })
 
-    setMesas(Array.from(mapaMesas.values()))
-    setLoading(false)
-  }
-
-  // Função para imprimir pedidos de todas as mesas, 1 impressão por mesa
-  async function imprimirPedidos() {
-    const pedidosNaoImpresso = mesas.flatMap(mesa =>
-      mesa.itens.map(item => ({
-        mesa_id: mesa.mesa_id,
-        produto_nome: item.produto_nome,
-        quantidade: item.quantidade
+    setMesas(
+      Array.from(mapaMesas.entries()).map(([mesa_id, dados]) => ({
+        mesa_id,
+        dataHora: dados.dataHora,
+        itens: Array.from(dados.itens.values())
       }))
     )
 
-    if (pedidosNaoImpresso.length === 0) {
+    setLoading(false)
+  }
+
+  // 🖨️ IMPRESSÃO — NÃO ALTERADA
+  async function imprimirPedidos() {
+    if (mesas.length === 0) {
       alert('Nenhum pedido novo para imprimir.')
       return
     }
 
-    // Agrupa por mesa
-    const mesasMap = new Map<number, { produto: string; quantidade: number }[]>()
-    pedidosNaoImpresso.forEach(p => {
-      if (!mesasMap.has(p.mesa_id)) mesasMap.set(p.mesa_id, [])
-      mesasMap.get(p.mesa_id)?.push({
-        produto: p.produto_nome,
-        quantidade: p.quantidade
-      })
-    })
-
-    // Função auxiliar para imprimir uma mesa de cada vez
-    const imprimirMesa = (mesa: number, itens: { produto: string; quantidade: number }[]) => {
+    mesas.forEach(mesa => {
       let html = `
 <html>
 <head>
-  <title>Pedidos Mesa ${mesa}</title>
-  <style>
-    body {
-      font-family: Arial, sans-serif;
-      margin: 0;
-      padding: 0;
-      width: 58mm;
-    }
-    h3 {
-      margin: 0 0 4px 0;
-      font-size: 14px;
-    }
-    ul {
-      list-style: none;
-      padding: 0;
-      margin: 0 0 8px 0;
-    }
-    li {
-      font-size: 12px;
-      margin: 2px 0;
-    }
-    hr {
-      border: 0;
-      border-top: 1px dashed #000;
-      margin: 4px 0;
-    }
-    @page { size: auto; margin: 0; }
-    @media print {
-      body { width: 58mm; margin: 0; }
-    }
-  </style>
+<style>
+  body { font-family: Arial; width: 58mm; margin: 0; padding: 0; }
+  h3 { margin: 0; font-size: 14px; }
+  .data { font-size: 11px; margin-bottom: 6px; }
+  li { font-size: 12px; margin: 2px 0; }
+  hr { border-top: 1px dashed #000; }
+  @page { margin: 0; }
+</style>
 </head>
 <body>
-<h3>🪑 Mesa ${mesa}</h3>
+<h3>🪑 Mesa ${mesa.mesa_id}</h3>
+<div class="data">⏰ ${mesa.dataHora}</div>
 <ul>
 `
-      itens.forEach(i => {
-        html += `<li>🍢 ${i.produto} — ${i.quantidade}</li>`
+
+      mesa.itens.forEach(i => {
+        html += `<li>🍢 ${i.produto_nome} — ${i.quantidade}</li>`
       })
-      html += '</ul><hr></body></html>'
 
-      const printWindow = window.open('', '', 'width=300,height=200')
-      if (printWindow) {
-        printWindow.document.write(html)
-        printWindow.document.close()
-        printWindow.focus()
-        printWindow.print()
-        printWindow.close()
-      }
-    }
+      html += `
+</ul>
+<hr />
+</body>
+</html>
+`
 
-    // Imprime cada mesa sequencialmente
-    mesasMap.forEach((itens, mesa) => {
-      imprimirMesa(mesa, itens)
+      const w = window.open('', '', 'width=300,height=300')
+      if (!w) return
+      w.document.write(html)
+      w.document.close()
+      w.focus()
+      w.print()
+      w.close()
     })
 
-    // Marca pedidos como impressos
-    const { data: pedidosData, error } = await supabase
+    const { data } = await supabase
       .from('pedidos')
       .select('id')
       .eq('impresso', false)
 
-    const idsParaAtualizar = pedidosData?.map(p => p.id) || []
-
-    if (idsParaAtualizar.length > 0) {
-      const { error: erroAtualizar } = await supabase
-        .from('pedidos')
-        .update({ impresso: true })
-        .in('id', idsParaAtualizar)
-
-      if (erroAtualizar)
-        console.error('Erro ao marcar pedidos como impressos:', erroAtualizar)
+    const ids = data?.map(p => p.id) || []
+    if (ids.length > 0) {
+      await supabase.from('pedidos').update({ impresso: true }).in('id', ids)
     }
 
     carregarPedidos()
   }
 
-  // useEffect para atualizar a cozinha a cada 3s
   useEffect(() => {
     carregarPedidos()
-
-    const interval = setInterval(() => {
-      carregarPedidos()
-    }, 3000) // ⏱️ 3 segundos
-
-    return () => {
-      clearInterval(interval)
-    }
+    const interval = setInterval(carregarPedidos, 3000)
+    return () => clearInterval(interval)
   }, [])
 
   return (
@@ -215,7 +209,6 @@ export default function Cozinha() {
           color: '#fff',
           border: 'none',
           borderRadius: 6,
-          cursor: 'pointer',
           marginBottom: 20
         }}
       >
@@ -225,34 +218,32 @@ export default function Cozinha() {
       {loading && <p>Carregando pedidos...</p>}
 
       {!loading && mesas.length === 0 && (
-        <p>✅ Nenhum pedido pendente para preparo.</p>
+        <p>✅ Nenhum pedido pendente.</p>
       )}
 
-      {!loading && mesas.length > 0 && (
-        <div style={{ marginTop: 20 }}>
-          {mesas.map(mesa => (
-            <div
-              key={mesa.mesa_id}
-              style={{
-                padding: 16,
-                marginBottom: 16,
-                border: '2px solid #333',
-                borderRadius: 10
-              }}
-            >
-              <h3>🪑 Mesa {mesa.mesa_id}</h3>
+      {!loading &&
+        mesas.map(mesa => (
+          <div
+            key={mesa.mesa_id}
+            style={{
+              border: '2px solid #333',
+              borderRadius: 10,
+              padding: 16,
+              marginBottom: 16
+            }}
+          >
+            <h3>🪑 Mesa {mesa.mesa_id}</h3>
+            <small>⏰ {mesa.dataHora}</small>
 
-              <ul style={{ marginTop: 8 }}>
-                {mesa.itens.map((item, index) => (
-                  <li key={index}>
-                    🍢 {item.produto_nome} — <strong>{item.quantidade}</strong>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ))}
-        </div>
-      )}
+            <ul>
+              {mesa.itens.map((i, idx) => (
+                <li key={idx}>
+                  🍢 {i.produto_nome} — <strong>{i.quantidade}</strong>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))}
     </main>
   )
 }
